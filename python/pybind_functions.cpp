@@ -1,6 +1,17 @@
 #include <Eigen/Dense>
 
+#include <cmath>
+#include <memory>
+#include <stdexcept>
+#include <tuple>
+#include <vector>
+
 #include "superansac.h"
+
+#include "estimators/line3d_utils.h"
+#include "estimators/estimator_line3d.h"
+#include "estimators/solver_line3d_minimal.h"
+#include "estimators/solver_line3d_pca.h"
 
 #include "estimators/solver_homography_four_point.h"
 #include "estimators/estimator_homography.h"
@@ -1286,5 +1297,225 @@ std::tuple<Eigen::Matrix3d, std::vector<size_t>, double, size_t> estimateHomogra
     return std::make_tuple(robustEstimator.getBestModel().getData(), 
         robustEstimator.getInliers(), 
         robustEstimator.getBestScore().getValue(), 
+        robustEstimator.getIterationNumber());
+}
+/*
+    3D-line estimation.
+
+    Public contract (also documented in docs/line3d.md):
+      - input points: Nx3 float64 XYZ rows, N >= 2, all finite
+      - output descriptor: 2x3 matrix
+          row 0 = point on the line closest to the origin
+          row 1 = unit direction, canonical sign (largest |component| > 0)
+      - residual = squared orthogonal point-to-line distance
+      - default config works for a plain Nx3 array
+      - unsupported settings raise std::invalid_argument instead of falling back
+*/
+superansac::RANSACSettings makeDefaultLine3DConfig()
+{
+    superansac::RANSACSettings settings;
+
+    // Generic defaults for XYZ data.  The global RANSACSettings defaults
+    // target 2D correspondence pipelines (PROSAC + MAGSAC-SPRT + nested
+    // RANSAC), so this entrypoint selects an explicit, documented subset.
+    settings.scoring = superansac::scoring::ScoringType::MAGSAC;
+    settings.sampler = superansac::samplers::SamplerType::Uniform;
+    settings.localOptimization =
+        superansac::local_optimization::LocalOptimizationType::LSQ;
+    settings.finalOptimization =
+        superansac::local_optimization::LocalOptimizationType::LSQ;
+    settings.useSprt = false;
+    return settings;
+}
+
+static void validateLine3DSettings(const superansac::RANSACSettings &kSettings_)
+{
+    if (!std::isfinite(kSettings_.inlierThreshold) ||
+        kSettings_.inlierThreshold <= 0.0)
+        throw std::invalid_argument(
+            "estimateLine3D: inlier_threshold must be finite and > 0.");
+
+    if (!std::isfinite(kSettings_.confidence) ||
+        kSettings_.confidence <= 0.0 || kSettings_.confidence >= 1.0)
+        throw std::invalid_argument(
+            "estimateLine3D: confidence must be finite and in (0, 1).");
+
+    if (kSettings_.minIterations == 0 || kSettings_.maxIterations == 0)
+        throw std::invalid_argument(
+            "estimateLine3D: min_iterations and max_iterations must be > 0.");
+
+    if (kSettings_.minIterations > kSettings_.maxIterations)
+        throw std::invalid_argument(
+            "estimateLine3D: min_iterations must not exceed max_iterations.");
+
+    // MAGSAC-SPRT is a 2D-pipeline optimization; the required, reviewed path is
+    // plain MAGSAC.  Reject rather than silently changing the requested mode.
+    if (kSettings_.useSprt)
+        throw std::invalid_argument(
+            "estimateLine3D: use_sprt=True is not supported for 3D line "
+            "fitting; set use_sprt=False.");
+
+    if (kSettings_.inlierSelector !=
+        superansac::inlier_selector::InlierSelectorType::None)
+        throw std::invalid_argument(
+            "estimateLine3D: inlier selectors are not supported for 3D lines.");
+
+    switch (kSettings_.scoring)
+    {
+        case superansac::scoring::ScoringType::RANSAC:
+        case superansac::scoring::ScoringType::MSAC:
+        case superansac::scoring::ScoringType::MAGSAC:
+            break;
+        default:
+            throw std::invalid_argument(
+                "estimateLine3D: supported scoring types are RANSAC, MSAC and "
+                "MAGSAC (ACRANSAC/GRID/MINPRAN/GAU/ML are not supported).");
+    }
+
+    switch (kSettings_.sampler)
+    {
+        case superansac::samplers::SamplerType::Uniform:
+            break;
+        default:
+            throw std::invalid_argument(
+                "estimateLine3D: only the Uniform sampler is supported. "
+                "PROSAC is rejected until its own index-bound audit is "
+                "complete; NAPSAC variants, Importance and AR samplers need "
+                "2D image bounds or probabilities.");
+    }
+
+    switch (kSettings_.localOptimization)
+    {
+        case superansac::local_optimization::LocalOptimizationType::None:
+        case superansac::local_optimization::LocalOptimizationType::LSQ:
+            break;
+        default:
+            throw std::invalid_argument(
+                "estimateLine3D: local_optimization must be None or LSQ.");
+    }
+
+    switch (kSettings_.finalOptimization)
+    {
+        case superansac::local_optimization::LocalOptimizationType::None:
+        case superansac::local_optimization::LocalOptimizationType::LSQ:
+            break;
+        default:
+            throw std::invalid_argument(
+                "estimateLine3D: final_optimization must be None or LSQ.");
+    }
+
+    if (kSettings_.terminationCriterion !=
+        superansac::termination::TerminationType::RANSAC)
+        throw std::invalid_argument(
+            "estimateLine3D: only the RANSAC termination criterion is "
+            "supported.");
+}
+
+std::tuple<Eigen::Matrix<double, 2, 3>, std::vector<size_t>, double, size_t>
+estimateLine3D(
+    const DataMatrix &kPoints_, // Nx3 XYZ points
+    superansac::RANSACSettings &settings_) // The RANSAC settings
+{
+    if (kPoints_.cols() != 3)
+        throw std::invalid_argument(
+            "The input matrix must have 3 columns (x, y, z).");
+    if (kPoints_.rows() < 2)
+        throw std::invalid_argument(
+            "The input matrix must have at least 2 rows.");
+
+    for (Eigen::Index row = 0; row < kPoints_.rows(); ++row)
+        for (Eigen::Index col = 0; col < 3; ++col)
+            if (!std::isfinite(kPoints_(row, col)))
+                throw std::invalid_argument(
+                    "The input points must contain only finite values (no NaN "
+                    "or Inf).");
+
+    validateLine3DSettings(settings_);
+    superansac::RANSACSettings settings = settings_;
+
+    const superansac::scoring::ScoringType kScoring = settings.scoring;
+    const superansac::samplers::SamplerType kSampler = settings.sampler;
+    const superansac::local_optimization::LocalOptimizationType kLocalOptimization =
+        settings.localOptimization;
+    const superansac::local_optimization::LocalOptimizationType kFinalOptimization =
+        settings.finalOptimization;
+    const superansac::termination::TerminationType kTerminationCriterion =
+        settings.terminationCriterion;
+
+    // Estimator: 2-point minimal solver + weighted-PCA non-minimal solver.
+    std::unique_ptr<superansac::estimator::Line3DEstimator> estimator =
+        std::make_unique<superansac::estimator::Line3DEstimator>();
+    estimator->setMinimalSolver(
+        new superansac::estimator::solver::Line3DMinimalSolver());
+    estimator->setNonMinimalSolver(
+        new superansac::estimator::solver::Line3DPCASolver());
+
+    // Sampler.
+    std::unique_ptr<superansac::samplers::AbstractSampler> sampler =
+        superansac::samplers::createSampler<3>(kSampler);
+    sampler->initialize(kPoints_);
+
+    // Scoring.
+    std::unique_ptr<superansac::scoring::AbstractScoring> scorer =
+        superansac::scoring::createScoring<3>(kScoring, false);
+    scorer->setThreshold(settings.inlierThreshold);
+    if (kScoring == superansac::scoring::ScoringType::MAGSAC)
+        dynamic_cast<superansac::scoring::MAGSACScoring *>(scorer.get())
+            ->initialize(estimator.get());
+
+    // Termination.
+    std::unique_ptr<superansac::termination::AbstractCriterion> terminationCriterion =
+        superansac::termination::createTerminationCriterion(kTerminationCriterion);
+    if (kTerminationCriterion == superansac::termination::TerminationType::RANSAC)
+        dynamic_cast<superansac::termination::RANSACCriterion *>(
+            terminationCriterion.get())->setConfidence(settings.confidence);
+
+    superansac::SupeRansac robustEstimator;
+    robustEstimator.setEstimator(estimator.get());
+    robustEstimator.setSampler(sampler.get());
+    robustEstimator.setScoring(scorer.get());
+    robustEstimator.setTerminationCriterion(terminationCriterion.get());
+
+    // Local optimization (optional).
+    std::unique_ptr<superansac::local_optimization::LocalOptimizer> localOptimizer;
+    if (kLocalOptimization !=
+        superansac::local_optimization::LocalOptimizationType::None)
+    {
+        localOptimizer =
+            superansac::local_optimization::createLocalOptimizer(kLocalOptimization);
+        dynamic_cast<superansac::local_optimization::LeastSquaresOptimizer *>(
+            localOptimizer.get())->setUseInliers(true);
+        robustEstimator.setLocalOptimizer(localOptimizer.get());
+    }
+
+    // Final optimization (optional).
+    std::unique_ptr<superansac::local_optimization::LocalOptimizer> finalOptimizer;
+    if (kFinalOptimization !=
+        superansac::local_optimization::LocalOptimizationType::None)
+    {
+        finalOptimizer =
+            superansac::local_optimization::createLocalOptimizer(kFinalOptimization);
+        dynamic_cast<superansac::local_optimization::LeastSquaresOptimizer *>(
+            finalOptimizer.get())->setUseInliers(true);
+        robustEstimator.setFinalOptimizer(finalOptimizer.get());
+    }
+
+    robustEstimator.setSettings(settings);
+    robustEstimator.run(kPoints_);
+
+    Eigen::Matrix<double, 2, 3> descriptor =
+        Eigen::Matrix<double, 2, 3>::Zero();
+    const std::vector<size_t> &inliers = robustEstimator.getInliers();
+
+    if (inliers.size() < estimator->sampleSize() ||
+        !superansac::estimator::line3d::isValidDescriptor(
+            robustEstimator.getBestModel().getData()))
+        return std::make_tuple(descriptor, std::vector<size_t>(), 0.0,
+            robustEstimator.getIterationNumber());
+
+    descriptor = robustEstimator.getBestModel().getData();
+    return std::make_tuple(descriptor,
+        inliers,
+        robustEstimator.getBestScore().getValue(),
         robustEstimator.getIterationNumber());
 }

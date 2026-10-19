@@ -179,6 +179,24 @@ print("Estimated Homography Matrix:", result)
   - `config`: An instance of `RANSACSettings`.
   - `probabilities` *(optional)*: Correspondence probabilities.
 
+#### 6. 3D Line Estimation
+- **Function**: `pysuperansac.estimateLine3D`
+- **Description**: Fits one 3D line to an Nx3 array of XYZ points with the
+  existing SupeRANSAC engine.
+- **Parameters**:
+  - `points`: An `Nx3` float64 array of finite XYZ points (`N >= 2`).
+  - `config` *(optional)*: An instance of `RANSACSettings`. The default works
+    for a plain `Nx3` array.
+- **Returns**: `(descriptor, inliers, score, iterations)`, where `descriptor`
+  is a `2x3` matrix: row 0 is the point on the line closest to the origin,
+  row 1 is the unit direction. The direction sign is canonicalized so its
+  largest-absolute-value component is positive. The residual is the squared
+  orthogonal point-to-line distance.
+- **Supported modes**: sampler `Uniform` (PROSAC is rejected pending its index-bound audit); scoring `RANSAC`, `MSAC`,
+  `MAGSAC`; local and final optimization `Nothing`/`LSQ`. Unsupported modes
+  raise an exception instead of silently falling back.
+- **Details**: see [docs/line3d.md](docs/line3d.md).
+
 
 ### Advanced Configuration: RANSACSettings
 

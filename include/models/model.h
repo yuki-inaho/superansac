@@ -46,7 +46,8 @@ enum Types
     FundamentalMatrix,
     EssentialMatrix,
     RigidTransformation,
-    AbsolutePose
+    AbsolutePose,
+    Line3D
 };
 
 // This is the model class. It is used to store the data and the model parameters.

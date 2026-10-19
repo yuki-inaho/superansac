@@ -9,8 +9,13 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# ---- Optional fast-math (OFF by default) ----
-option(SUPERANSAC_ENABLE_FAST_MATH "Enable aggressive fast-math" ON)
+# ---- Optional fast-math ----
+# Keep this OFF by default: -ffast-math implies -ffinite-math-only, which lets
+# the compiler assume NaN/Inf never occur.  The public API performs explicit
+# std::isfinite validation on input points and settings, so that validation must
+# not be optimized away.  Users who knowingly want the extra speed can still
+# pass -DSUPERANSAC_ENABLE_FAST_MATH=ON.
+option(SUPERANSAC_ENABLE_FAST_MATH "Enable aggressive fast-math" OFF)
 
 # ---- Flag probes ----
 include(CheckCXXCompilerFlag)
@@ -90,3 +95,10 @@ endif()
 
 add_subdirectory(src)
 add_subdirectory(python)
+
+# ---- Optional C++ unit tests ----
+option(SUPERANSAC_BUILD_TESTS "Build the C++ unit tests" OFF)
+if(SUPERANSAC_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()

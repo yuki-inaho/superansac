@@ -56,6 +56,12 @@ std::tuple<Eigen::Matrix3d, Eigen::Vector3d, std::vector<size_t>, double, size_t
     const std::vector<double>& kPointProbabilities_, // The probabilities of the points being inliers
     superansac::RANSACSettings& settings_); // The RANSAC settings
 
+superansac::RANSACSettings makeDefaultLine3DConfig();
+
+std::tuple<Eigen::Matrix<double, 2, 3>, std::vector<size_t>, double, size_t> estimateLine3D(
+    const DataMatrix& kPoints_, // Nx3 XYZ points
+    superansac::RANSACSettings& settings_); // The RANSAC settings
+
 // Validate that a buffer is a 2D array.
 static inline void require_2d(const py::buffer_info& b, const char* name) {
     if (b.ndim != 2) {
@@ -455,4 +461,37 @@ PYBIND11_MODULE(pysuperansac, m) {
         py::arg("bounding_box"),
         py::arg("probabilities") = py::none(),
         py::arg("config") = superansac::RANSACSettings());
+
+    // 3D line estimation from an Nx3 XYZ point array.
+    m.def(
+        "estimateLine3D",
+        [](py::array_t<double, py::array::c_style> points,
+           superansac::RANSACSettings& config) {
+
+            auto buf = points.request();
+            require_2d(buf, "points");
+            if (buf.shape[1] != 3) {
+                throw std::invalid_argument("points must be an Nx3 array (x, y, z)");
+            }
+
+            Eigen::Map<const Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> mat(
+                static_cast<const double*>(buf.ptr),
+                static_cast<Eigen::Index>(buf.shape[0]),
+                static_cast<Eigen::Index>(buf.shape[1]));
+
+            py::gil_scoped_release release;
+
+            return estimateLine3D(mat, config);
+        },
+        "Fit one 3D line to an Nx3 XYZ point array using the SupeRANSAC engine.\n\n"
+        "Returns (descriptor, inliers, score, iterations), where descriptor is a\n"
+        "2x3 float64 matrix: row 0 is the point on the line closest to the origin,\n"
+        "row 1 is the unit direction.  The direction sign is canonicalized so its\n"
+        "largest-|component| component is positive.  The residual is the squared\n"
+        "orthogonal point-to-line distance.\n\n"
+        "Supported: sampler Uniform; scoring RANSAC/MSAC/MAGSAC;\n"
+        "local and final optimization None or LSQ.  Unsupported modes raise\n"
+        "ValueError explicitly.",
+        py::arg("points"),
+        py::arg("config") = makeDefaultLine3DConfig());
 }

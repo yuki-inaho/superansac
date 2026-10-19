@@ -37,6 +37,7 @@
 #include "../utils/uniform_random_generator.h"
 #include "../utils/types.h"
 
+#include <memory>
 #include <vector>
 #include <iostream>
 
@@ -65,19 +66,22 @@ class UniformRandomSampler : public AbstractSampler
         FORCE_INLINE void initialize(
             const DataMatrix &kData_)
         {
-            randomGenerator = std::make_unique<utils::UniformRandomGenerator<size_t>>();
-            randomGenerator->resetGenerator(0,
-                static_cast<size_t>(kData_.rows()));
+            initialize(static_cast<size_t>(kData_.rows()));
         }
 
         // Initializes any non-trivial variables and sets up sampler if
         // necessary. Must be called before sample is called.
+        //
+        // UniformRandomGenerator stores an INCLUSIVE upper bound, while the
+        // point count is exclusive.  Passing the count directly allowed the
+        // generator to emit index == point count, which is out of range when
+        // used to index the data matrix.
         FORCE_INLINE void initialize(
             const size_t kPointNumber_)
         {
             randomGenerator = std::make_unique<utils::UniformRandomGenerator<size_t>>();
             randomGenerator->resetGenerator(0,
-                static_cast<size_t>(kPointNumber_));
+                kPointNumber_ == 0 ? 0 : kPointNumber_ - 1);
         }
         			
         FORCE_INLINE void update(
@@ -91,7 +95,9 @@ class UniformRandomSampler : public AbstractSampler
 
         void reset(const size_t &kDataSize_)
         {
-            randomGenerator->resetGenerator(0, kDataSize_);
+            // Inclusive upper bound, see initialize().
+            randomGenerator->resetGenerator(0,
+                kDataSize_ == 0 ? 0 : kDataSize_ - 1);
         }
 
         // Sample function
@@ -109,13 +115,22 @@ class UniformRandomSampler : public AbstractSampler
             const int kNumSamples_, 
             size_t *samples_)
         {
-            // If there are not enough points in the pool, interrupt the procedure.
-			if (kNumSamples_ > kPointNumber_)
-				return false;
+            // The sample call is authoritative for the current pool size: some
+            // nested optimizers initialize with N-1 and then sample N, so the
+            // bounds must follow kPointNumber_ rather than the initialize value.
+            if (randomGenerator == nullptr || samples_ == nullptr ||
+                kNumSamples_ <= 0 || kPointNumber_ == 0 ||
+                static_cast<size_t>(kNumSamples_) > kPointNumber_)
+                return false;
+
+            // UniformRandomGenerator uses an inclusive upper bound.  Resetting
+            // here both tracks grow/shrink between calls and keeps the bound at
+            // N-1; it does not reseed the generator.
+            randomGenerator->resetGenerator(0, kPointNumber_ - 1);
 
 			// Generate a unique random set of indices.
 			randomGenerator->generateUniqueRandomSet(samples_,
-				kNumSamples_);
+				static_cast<size_t>(kNumSamples_));
                 
 			return true;
         }
