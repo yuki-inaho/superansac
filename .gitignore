@@ -39,8 +39,14 @@ build/*
 *.zip
 pysuperansac.egg-info/*
 .vscode/
-pyproject.toml
 *.egg
 *.csv
 *.pdf
 tests/*.csv
+
+# Managed environments and generated artifacts
+.pixi/
+.venv/
+dist/
+.pytest_cache/
+__pycache__/

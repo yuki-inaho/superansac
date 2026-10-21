@@ -1,0 +1,41 @@
+[workspace]
+name = "superansac"
+version = "1.0.0"
+description = "Locked C++ and Python development environment for SupeRANSAC"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[dependencies]
+python = "3.12.*"
+cxx-compiler = ">=1.9,<2"
+cmake = "3.31.*"
+ninja = "1.13.*"
+eigen = "3.4.*"
+libboost-devel = "1.85.*"
+libopencv = { version = "4.10.*", build = "headless*" }
+pybind11 = "3.0.1.*"
+numpy = "2.2.*"
+pytest = "8.4.*"
+matplotlib-base = "3.10.*"
+pip = "25.2.*"
+python-build = "1.3.*"
+scikit-build-core = "0.11.6.*"
+packaging = "25.0.*"
+pathspec = "0.12.1.*"
+
+[activation.env]
+# Do not accidentally import an extension from a previous ad-hoc build.
+PYTHONPATH = ""
+PYTHONNOUSERSITE = "1"
+MPLBACKEND = "Agg"
+CMAKE_BUILD_PARALLEL_LEVEL = "2"
+
+[tasks]
+configure = 'cmake -S . -B build/pixi -G Ninja -DCMAKE_BUILD_TYPE=Release -DSUPERANSAC_ENABLE_NATIVE_ARCH=OFF -DPython_EXECUTABLE="$CONDA_PREFIX/bin/python" -DCMAKE_PREFIX_PATH="$CONDA_PREFIX"'
+build = { cmd = "cmake --build build/pixi", depends-on = ["configure"] }
+test-native = { cmd = "ctest --test-dir build/pixi --output-on-failure", depends-on = ["build"] }
+install = "python -m pip install --no-index --no-build-isolation --no-deps --no-cache-dir ."
+test-python = { cmd = "python -m pytest -q tests/line3d", depends-on = ["install"] }
+test = { depends-on = ["test-native", "test-python"] }
+demo = { cmd = "python examples/example_line3d_fitting.py --seed 7 --outlier-ratio 0.6 --plot build/line3d.png", depends-on = ["install"] }
+package = "python -m build --no-isolation"

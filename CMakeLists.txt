@@ -9,8 +9,11 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# ---- Optional fast-math (OFF by default) ----
+# ---- Optional fast-math (ON by default) ----
 option(SUPERANSAC_ENABLE_FAST_MATH "Enable aggressive fast-math" ON)
+
+# Preserve legacy tuning by default; locked environments/wheels opt out.
+option(SUPERANSAC_ENABLE_NATIVE_ARCH "Tune binaries for the build host CPU" ON)
 
 # ---- Flag probes ----
 include(CheckCXXCompilerFlag)
@@ -27,8 +30,10 @@ endfunction()
 # ---- Baseline high-performance flags ----
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   add_flag_if_supported(-O3)
-  add_flag_if_supported(-march=native)
-  add_flag_if_supported(-mtune=native)
+  if(SUPERANSAC_ENABLE_NATIVE_ARCH)
+    add_flag_if_supported(-march=native)
+    add_flag_if_supported(-mtune=native)
+  endif()
   add_flag_if_supported(-fno-plt)
   add_flag_if_supported(-funroll-loops)
   add_flag_if_supported(-ftree-vectorize)
@@ -40,8 +45,10 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   add_compile_options($<$<CONFIG:Release>:-DNDEBUG>)
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
   add_flag_if_supported(-O3)
-  add_flag_if_supported(-march=native)
-  add_flag_if_supported(-mtune=native)
+  if(SUPERANSAC_ENABLE_NATIVE_ARCH)
+    add_flag_if_supported(-march=native)
+    add_flag_if_supported(-mtune=native)
+  endif()
   check_cxx_compiler_flag("-flto=thin" HAS_FLTO_THIN)
   if(HAS_FLTO_THIN)
     add_compile_options($<$<CONFIG:Release>:-flto=thin>)
