@@ -79,6 +79,8 @@ public:
 
     UniformRandomGenerator() = default;
 
+    inline void setSeed(uint64_t seed) { engine_ = Xoshiro256ss(seed); }
+
     // Legacy API: returns a generator usable by std::discrete_distribution
     inline XoshiroAdapter& getGenerator() { return adapter_; }
 

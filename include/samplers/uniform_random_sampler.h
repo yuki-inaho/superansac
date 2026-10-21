@@ -47,12 +47,19 @@ class UniformRandomSampler : public AbstractSampler
 {
     protected:
         std::unique_ptr<utils::UniformRandomGenerator<size_t>> randomGenerator;
+        uint64_t seed = 0x1234567890ABCDEFULL;
 
     public:
         // Constructor 
         UniformRandomSampler() {}
         // Destructor
         ~UniformRandomSampler() {}
+
+        // Reinitialization and explicit reseeding both restart the sequence.
+        void setSeed(uint64_t value) {
+            seed = value;
+            if (randomGenerator) randomGenerator->setSeed(seed);
+        }
 
         // Return the name of the sampler
         constexpr static const char *name()
@@ -66,6 +73,7 @@ class UniformRandomSampler : public AbstractSampler
             const DataMatrix &kData_)
         {
             randomGenerator = std::make_unique<utils::UniformRandomGenerator<size_t>>();
+            randomGenerator->setSeed(seed);
             randomGenerator->resetGenerator(0,
                 static_cast<size_t>(kData_.rows()));
         }
@@ -76,6 +84,7 @@ class UniformRandomSampler : public AbstractSampler
             const size_t kPointNumber_)
         {
             randomGenerator = std::make_unique<utils::UniformRandomGenerator<size_t>>();
+            randomGenerator->setSeed(seed);
             randomGenerator->resetGenerator(0,
                 static_cast<size_t>(kPointNumber_));
         }
@@ -110,10 +119,17 @@ class UniformRandomSampler : public AbstractSampler
             size_t *samples_)
         {
             // If there are not enough points in the pool, interrupt the procedure.
-			if (kNumSamples_ > kPointNumber_)
+			if (kNumSamples_ < 0 || static_cast<size_t>(kNumSamples_) > kPointNumber_)
 				return false;
 
-			// Generate a unique random set of indices.
+			if (kNumSamples_ == 0) return true;
+            if (!randomGenerator) initialize(kPointNumber_);
+            // The generator has an inclusive upper bound, whereas sample()
+            // receives a count. Always use the actual pool size, including
+            // after a nested optimizer switches to a smaller inlier pool.
+            randomGenerator->resetGenerator(0, kPointNumber_ - 1);
+
+            // Generate a unique random set of indices.
 			randomGenerator->generateUniqueRandomSet(samples_,
 				kNumSamples_);
                 

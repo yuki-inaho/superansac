@@ -5,6 +5,7 @@
 #include <Eigen/Dense>
 
 #include "superansac.h"
+#include "line3d.h"
 #include "camera/types.h"
 #include "samplers/types.h"
 #include "scoring/types.h"
@@ -103,6 +104,22 @@ static inline std::vector<double> probs_from_optional(py::object probabilities) 
 
 PYBIND11_MODULE(pysuperansac, m) {
     m.doc() = "Python bindings for the RANSAC C++ library using pybind11";
+
+    m.def("fitLine3D", [](const DataMatrix& points, const std::vector<double>& weights) {
+        py::gil_scoped_release release;
+        return superansac::fitLine3D(points, weights);
+    }, py::arg("points"), py::arg("weights") = std::vector<double>{},
+       "Orthogonal PCA line fit. Returns a 2x3 array [anchor; unit direction].");
+
+    m.def("estimateLine3D", [](const DataMatrix& points, double threshold, double confidence,
+                              size_t min_iterations, size_t max_iterations, uint64_t seed, bool refine) {
+        py::gil_scoped_release release;
+        return superansac::estimateLine3D(points, threshold, confidence, min_iterations, max_iterations, seed, refine);
+    }, py::arg("points"), py::arg("threshold") = 0.03, py::arg("confidence") = 0.99,
+       py::arg("min_iterations") = 100, py::arg("max_iterations") = 5000,
+       py::arg("seed") = 0, py::arg("refine") = true,
+       "Uniform 3D line RANSAC with MSAC scoring and optional inlier PCA refinement. "
+       "Returns (2x3 [anchor; unit direction], inlier_indices, score, iterations).");
 
     // Expose the sampler types to Python
     py::enum_<superansac::scoring::ScoringType>(m, "ScoringType")

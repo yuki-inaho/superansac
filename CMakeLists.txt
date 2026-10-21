@@ -90,3 +90,11 @@ endif()
 
 add_subdirectory(src)
 add_subdirectory(python)
+
+# Self-contained synthetic tests; existing dataset benchmarks remain optional.
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(test_line3d tests/line3d/test_line3d.cpp)
+  target_link_libraries(test_line3d PRIVATE SupeRANSAC)
+  add_test(NAME line3d_native COMMAND test_line3d)
+endif()
