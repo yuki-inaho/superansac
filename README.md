@@ -6,23 +6,105 @@ SupeRANSAC is a Python library that provides bindings for an advanced RANSAC C++
 It supports a wide variety of sampling, scoring, local optimization, and inlier selection techniques for robust model estimation tasks.
 It provides estimators for homography, essential, fundamental matrix, rigid and absolute pose estimation.
 
-## Installation
+## Installation and reproducible development
 
-Clone the repository and its submodules:
-```
-git clone git@github.com:danini/superansac.git
+### Recommended: one locked Pixi environment
+
+Use [Pixi](https://pixi.prefix.dev/latest/installation/) **0.82.1**, the version
+used in CI. This repository has substantial native dependencies, so Pixi is the
+primary workflow rather than a Python-only uv environment: `pixi.lock` records
+Python, the C/C++ compiler and sysroot, CMake, Ninja, Eigen, Boost, OpenCV,
+pybind11, NumPy, pytest, matplotlib, and their transitive package builds/hashes.
+There is deliberately no second uv lockfile or separate just task layer.
+
+The supported locked reference is **Linux x86_64, Python 3.12** (exact patch and
+package builds are in `pixi.lock`), tested on Ubuntu 24.04 CI. A Linux host with
+kernel 4.18 and glibc 2.28 or newer is required. Other platforms can still use the ordinary
+CMake/pip route below, but are not validated by this lockfile. No `sudo`, system
+CMake, development headers, or separate Python installation is needed for Pixi.
+
+```sh
+git clone https://github.com/yuki-inaho/superansac.git
+cd superansac
+pixi install --locked
+pixi run --locked test
+pixi run --locked demo
 ```
 
-Make sure that you have the necessary OpenCV libraries installed:
+`test` builds and runs the native CTest test, installs the actual Python
+extension (and its sibling native core library), then runs the Python tests.
+`demo` saves `build/line3d.png` using a headless matplotlib backend and prints
+accuracy metrics. Tasks always run the build/install dependencies rather than
+assuming a previous build is current. The Python tests import the installed
+module, not a manually supplied `PYTHONPATH`.
+
+Useful individual commands:
+
+```sh
+pixi run --locked build        # Native CMake build in build/pixi
+pixi run --locked test-native
+pixi run --locked install      # Build and install into the Pixi Python environment
+pixi run --locked test-python
+pixi run --locked package      # sdist, then wheel rebuilt from that sdist in dist/
+pixi run --locked python -I -c "import pysuperansac; print(pysuperansac.__file__)"
 ```
+
+For custom demo arguments, install once, then run Python inside the environment:
+
+```sh
+pixi run --locked install
+pixi run --locked python examples/example_line3d_fitting.py \
+  --points 10000 --seed 7 --outlier-ratio 0.6 --plot build/line3d-large.png
+```
+
+Pixi tasks use the locked build dependencies with `--no-build-isolation` and
+`--no-deps` and `--no-index`; pip does not independently resolve or download dependencies. The native and
+Python builds use Release mode and disable host-specific `-march=native` tuning.
+The existing fast-math default remains enabled. For the strict variant:
+
+```sh
+pixi run --locked configure -- -DSUPERANSAC_ENABLE_FAST_MATH=OFF
+SKBUILD_CMAKE_ARGS=-DSUPERANSAC_ENABLE_FAST_MATH=OFF pixi run --locked test
+```
+
+The native choice remains in its CMake cache; use the same two commands with
+`ON` to switch back. `CMAKE_BUILD_PARALLEL_LEVEL` is set to 2 to avoid excessive
+compiler memory use. For a fresh environment, use a fresh clone and run the
+quick start above. CI does exactly that with environment caching disabled,
+tests fast math ON/OFF, and validates an installed wheel built from the sdist.
+
+Commit `pixi.toml` and `pixi.lock` together. Normal use should keep `--locked`,
+which rejects a manifest/lock mismatch instead of silently re-resolving. To
+intentionally upgrade, edit constraints or run `pixi update`, review the lock
+diff, and rerun the full tests and demo before committing.
+
+The lock reproduces dependency packages, **not the OS kernel, CPU, or bitwise
+floating-point results across machines**. It covers the self-contained line
+validation, not the optional dataset/feature-matching notebook stacks. Wheels
+contain the project core library but still require compatible external native
+libraries; they are local environment artifacts, not portable manylinux wheels.
+Do not copy a wheel built against one Pixi prefix into an unrelated environment.
+
+### Existing CMake / pip workflows
+
+The native CMake API and Python import/API remain unchanged. Package metadata
+allows Python 3.8+, but only the locked Python 3.12 environment is validated here.
+A standalone
+`python -m pip install .` uses the declared scikit-build-core backend and bundles
+both native project libraries correctly; it does not use `pixi.lock`. For that
+route, install a C++17 compiler, Python development headers, Eigen3, Boost system,
+and OpenCV development files first. For example, on Ubuntu:
+
+```sh
 sudo apt-get update
-sudo apt-get install libopencv-dev libopencv-contrib-dev libarpack++2-dev libarpack2-dev libsuperlu-dev cmake build-essential libboost-all-dev libeigen3-dev
+sudo apt-get install build-essential python3-dev libeigen3-dev libboost-system-dev libopencv-dev
+python -m pip install .
 ```
 
-Install SupeRANSAC by running 
-```
-pip install .
-```
+These system packages are not locked by pip. Direct CMake builds are also still
+available; supply `pybind11_DIR` if pybind11 is not in CMake's search path. The
+legacy `setup.py` is retained, but the PEP 517 `pip install .` command above is
+the supported Python packaging entry point.
 
 # Results
 
@@ -369,21 +451,13 @@ not segment endpoint estimation or multi-line extraction.
 
 ### Reproducible synthetic validation
 
-After installing the standard project dependencies (Eigen3, Boost system,
-OpenCV development files, pybind11), build and test from the repository root:
+Use the [locked Pixi environment](#recommended-one-locked-pixi-environment)
+from the repository root:
 
 ```sh
-python -m pip install cmake pybind11 numpy pytest
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-  -Dpybind11_DIR="$(python -m pybind11 --cmakedir)" \
-  -DSUPERANSAC_ENABLE_FAST_MATH=OFF
-cmake --build build -j2
-ctest --test-dir build --output-on-failure
-PYTHONPATH=build/python python -m pytest -q tests/line3d
-PYTHONPATH=build/python python examples/example_line3d_fitting.py \
-  --seed 7 --outlier-ratio 0.6
-# Optional visualization (requires matplotlib):
-PYTHONPATH=build/python python examples/example_line3d_fitting.py --plot /tmp/line3d.png
+pixi install --locked
+pixi run --locked test
+pixi run --locked demo
 ```
 
 The example generates seeded XYZ line points with isotropic Gaussian noise and
