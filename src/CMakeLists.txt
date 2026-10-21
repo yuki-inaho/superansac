@@ -16,6 +16,7 @@ file(GLOB_RECURSE SOURCE_FILES
 # Core shared library
 add_library(SupeRANSAC SHARED
   superansac.cpp
+  line3d.cpp
   ${SOURCE_FILES}
 )
 

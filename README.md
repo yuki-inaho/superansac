@@ -290,3 +290,113 @@ Download the [CAB scene of the LaMAR dataset](https://cvg-data.inf.ethz.ch/lamar
 
 ### Evaluation on the KITTI dataset
 Download the [KITTI odometry dataset](https://www.cvlibs.net/datasets/kitti/eval_odometry.php) (grayscale images and poses), and unzip them to your favourite location.
+
+## 3D point-cloud line fitting
+
+`fitLine3D` and `estimateLine3D` fit a **single infinite 3D line** to an `N x 3`
+XYZ array. They do not project onto an image plane or extract multiple lines.
+Both return a `2 x 3` descriptor: row 0 is a point on the line, row 1 is a unit
+3D direction, so the line is `anchor + t * direction`. The largest-magnitude
+direction component is made positive for deterministic output, but `d` and `-d`
+represent the same geometric line. The anchor is the fitting subset's centroid
+(weighted for weighted least squares), not a unique closest-to-origin point.
+
+```python
+import numpy as np
+import pysuperansac
+
+# Replace with your point cloud. Lists, float32, strided and Fortran-order
+# arrays are also accepted and converted to a row-major double matrix.
+points = np.array([[0, 1, 2], [1, 3, 5], [2, 5, 8], [9, -7, 2]], dtype=float)
+
+# Ordinary orthogonal least squares: sensitive to outliers.
+line_lsq = pysuperansac.fitLine3D(points)
+# Optional nonnegative weights, one per input point:
+line_weighted = pysuperansac.fitLine3D(points, weights=[1, 1, 1, 0])
+
+# Robust fit using the existing native SupeRansac engine.
+line, inliers, score, iterations = pysuperansac.estimateLine3D(
+    points,
+    threshold=0.03,       # perpendicular Euclidean distance, in XYZ units
+    confidence=0.99,      # adaptive two-point RANSAC stopping estimate
+    min_iterations=100,
+    max_iterations=5000,
+    seed=7,
+    refine=True,
+)
+anchor, direction = line
+```
+
+The implementation supplies a native `Line3DEstimator` and `Line3DSolver` under
+`include/estimators`. A two-point hypothesis rejects coincident/numerically
+indistinguishable points. Non-minimal fitting uses the principal eigenvector of
+the centered, scaled 3D covariance (orthogonal PCA/total least squares), with
+optional weights. Residuals are `||(point - anchor) x direction||`. The solver
+uses the existing fixed-capacity `ModelMatrix` without changing existing APIs.
+C++ applications can include `line3d.h` and call `superansac::fitLine3D` or
+`superansac::estimateLine3D` with the same defaults and return ordering as Python.
+
+The robust convenience API deliberately supports **uniform sampling + MSAC
+scoring + optional score-gated inlier PCA refinement**. It does not silently
+apply image-specific samplers or null models to XYZ data. MSAC returns the
+negative sum of squared residuals truncated at `threshold**2` (larger is better).
+Inlier indices refer to the original input order and use a strict distance
+`< threshold` test. Refinement recollects inliers for up to two additional
+score-gated rounds; a refinement that worsens the score is not accepted. The
+low-level estimator reports two residual degrees of freedom. AC-RANSAC's
+image-area null model is explicitly unsupported.
+
+Reusing a seed on the same input, settings, and build reproduces the same run.
+Bit-for-bit agreement across compilers/platforms is not promised. Confidence is
+the standard RANSAC stopping estimate, not an accuracy guarantee, especially
+with repeated points, highly contaminated data, or a small iteration budget.
+The same patch corrects the shared uniform sampler's inclusive upper-bound bug:
+it now samples indices in `[0, N)` for the current pool, including after a pool
+size change. Other estimators retain their APIs, but corrected samples can
+change their numerical results.
+
+Invalid shapes, non-finite coordinates, invalid weights/settings, all-coincident
+clouds, or a non-unique PCA direction raise `ValueError` in Python
+(`std::invalid_argument` in C++). Failure to find a valid hypothesis within the
+budget raises `RuntimeError`. At least two positive-weight, numerically distinct
+points are required for weighted fitting. Duplicate points are allowed in an
+otherwise valid cloud. Low-level solver weights follow **sample order** when
+an index sample is supplied, matching the scoring weight-vector contract.
+Finite checks remain active with the project's default fast-math flags.
+Extremely large offsets with tiny local variation are limited by double
+precision; center/rescale such data first. This is unbounded line fitting,
+not segment endpoint estimation or multi-line extraction.
+
+### Reproducible synthetic validation
+
+After installing the standard project dependencies (Eigen3, Boost system,
+OpenCV development files, pybind11), build and test from the repository root:
+
+```sh
+python -m pip install cmake pybind11 numpy pytest
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -Dpybind11_DIR="$(python -m pybind11 --cmakedir)" \
+  -DSUPERANSAC_ENABLE_FAST_MATH=OFF
+cmake --build build -j2
+ctest --test-dir build --output-on-failure
+PYTHONPATH=build/python python -m pytest -q tests/line3d
+PYTHONPATH=build/python python examples/example_line3d_fitting.py \
+  --seed 7 --outlier-ratio 0.6
+# Optional visualization (requires matplotlib):
+PYTHONPATH=build/python python examples/example_line3d_fitting.py --plot /tmp/line3d.png
+```
+
+The example generates seeded XYZ line points with isotropic Gaussian noise and
+uniform 3D outliers, shuffles them, and compares robust fitting with all-point
+PCA. It reports sign-invariant angular error, transverse position error measured
+at the ground-truth anchor, true-inlier residual RMSE, and inlier precision and
+recall. Position error is not the shortest distance between two infinite skew
+lines, which can hide a large local displacement.
+
+Tests cover multiple line orientations, 0/30/60/80% outliers across three seeds,
+PCA refinement, threshold/returned-mask consistency, weighted and indexed fits,
+rotated/scaled/translated clouds, seed replay, duplicates, exact two-point input,
+isotropic degeneracy, NaN/Inf, invalid parameters, array memory layouts, sampler
+bounds, and a pre-existing homography-estimation smoke test. GitHub Actions runs
+the suite with fast math both enabled and disabled; no external datasets are
+needed. Existing dataset-dependent benchmarks are not part of this test suite.
